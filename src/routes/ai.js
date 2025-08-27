@@ -1,32 +1,79 @@
-const express = require('express');
-const { authenticateToken } = require('../middleware/auth');
+const express = require("express");
+const { authenticateToken } = require("../middleware/auth");
+const { body, validationResult } = require("express-validator");
 
 const router = express.Router();
 
+router.post(
+  "/chat",
+  authenticateToken,
+  [
+    body("message")
+      .notEmpty()
+      .withMessage("Message is required")
+      .isLength({ max: 1000 })
+      .withMessage("Message too long"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty())
+      return res.status(400).json({ errors: errors.array() });
 
-router.post('/chat', authenticateToken, async (req, res) => {
-  try {
-    const { message } = req.body;
-    
-    // In a real implementation, you would call your AI API here
-    // For now, we'll simulate a response
-    const responses = [
-      "Hello! How can I assist you today?",
-      "That's an interesting question. Let me think about that...",
-      "I'm here to help you with any information you need.",
-      "I understand what you're asking. Here's what I can tell you...",
-      "Thanks for your message! I'm processing your request."
-    ];
-    
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-    
-    res.json({ response: randomResponse });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server error' });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+
+    try {
+      const { message } = req.body;
+
+      const callGeminiAPI = async () => {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ contents: [{ parts: [{ text: message }] }] }),
+            signal: controller.signal,
+          }
+        );
+
+        const data = await response.json();
+        if (response.status === 429) {
+          const retryDelay =
+            data?.error?.details?.find((d) =>
+              d["@type"].includes("RetryInfo")
+            )?.retryDelay || "5s";
+
+          const delayMs = parseInt(retryDelay) * 1000 || 5000;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+          return callGeminiAPI();
+        }
+
+        if (!response.ok) {
+          console.error("Gemini API error:", data);
+          throw new Error("Gemini API failed");
+        }
+
+        return data;
+      };
+
+      const data = await callGeminiAPI();
+
+      let aiResponse =
+        data.candidates?.[0]?.content?.parts?.[0]?.text ||
+        "Sorry, I couldn't generate a response.";
+
+      // Clean up newlines and extra spaces
+      aiResponse = aiResponse.replace(/\n+/g, " ").trim();
+
+      res.json({ response: aiResponse });
+    } catch (error) {
+      console.error("Server error:", error);
+      res.status(500).json({ message: "Server error" });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
-});
+);
 
 module.exports = router;
