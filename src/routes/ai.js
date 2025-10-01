@@ -3,6 +3,7 @@ const { authenticateToken } = require("../middleware/auth");
 const { body, validationResult } = require("express-validator");
 
 const router = express.Router();
+require('dotenv').config();
 
 router.post(
   "/chat",
@@ -26,15 +27,15 @@ router.post(
       const { message } = req.body;
 
       const callGeminiAPI = async () => {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ contents: [{ parts: [{ text: message }] }] }),
-            signal: controller.signal,
-          }
-        );
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ contents: [{ parts: [{ text: message }] }] }),
+            signal: controller.signal,
+          }
+        );
 
         const data = await response.json();
         if (response.status === 429) {
@@ -50,9 +51,9 @@ router.post(
         }
 
         if (!response.ok) {
-          console.error("Gemini API error:", data);
-          throw new Error("Gemini API failed");
-        }
+          console.error("Gemini API error status:", response.status, "data:", data); // ADDED STATUS LOG
+          throw new Error("Gemini API failed with status " + response.status); // Throw status
+        }
 
         return data;
       };
@@ -64,7 +65,7 @@ router.post(
         "Sorry, I couldn't generate a response.";
 
       // Clean up newlines and extra spaces
-      aiResponse = aiResponse.replace(/\n+/g, " ").trim();
+      // aiResponse = aiResponse.replace(/\n+/g, " ").trim();
 
       res.json({ response: aiResponse });
     } catch (error) {

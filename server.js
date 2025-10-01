@@ -17,7 +17,6 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-
 app.get("/api/health", (req, res) => {
   res.json({
     message: "Lumen Backend API is running! (Database status: checking...)",
@@ -73,6 +72,7 @@ async function startServer() {
 
       if (isConnected) {
         console.log(`✅ Database: Connected`);
+        
         console.log(`🤖 AI endpoints: http://localhost:${PORT}/api/ai/chat`);
         console.log(
           `🔐 Auth endpoints: http://localhost:${PORT}/api/auth/login`

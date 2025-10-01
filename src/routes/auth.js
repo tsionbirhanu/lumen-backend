@@ -1,9 +1,12 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const { authenticateToken } = require('../middleware/auth')
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { pool } = require("../config/database");
 const { body, validationResult } = require("express-validator");
+const { OAuth2Client } = require('google-auth-library');
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const router = express.Router();
 
@@ -121,50 +124,111 @@ router.post(
 );
 
 // GOOGLE OAUTH
+// router.post(
+//   "/google",
+//   [
+//     body("email").isEmail().withMessage("Invalid email"),
+//     body("sub").notEmpty().withMessage("Google ID required"),
+//     body("name").notEmpty().withMessage("Name is required"),
+//   ],
+//   async (req, res) => {
+//     const errors = validationResult(req);
+//     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+//     try {
+//       const { email, name, picture, sub } = req.body;
+//       const randomPassword = crypto.randomBytes(16).toString("hex");
+
+//       let user = await pool.query(
+//         "SELECT id, username, email, name, picture FROM users WHERE google_id = $1 OR email = $2",
+//         [sub, email]
+//       );
+
+//       if (user.rows.length === 0) {
+//         const newUser = await pool.query(
+//           `INSERT INTO users (username, email, password, google_id, name, picture, auth_provider) 
+//            VALUES ($1, $2, $3, $4, $5, $6, 'google') 
+//            RETURNING id, username, email, name, picture`,
+//           [email, email, randomPassword, sub, name, picture]
+//         );
+//         user = newUser;
+//       }
+
+//       const accessToken = generateAccessToken(user.rows[0].id);
+//       const refreshToken = await generateRefreshToken(user.rows[0].id);
+
+//       res.json({
+//         message: "Google login successful",
+//         accessToken,
+//         refreshToken,
+//         user: user.rows[0],
+//       });
+//     } catch (error) {
+//       console.error("Google login error:", error);
+//       res.status(500).json({ message: "Server error" });
+//     }
+//   }
+// );
+
 router.post(
-  "/google",
-  [
-    body("email").isEmail().withMessage("Invalid email"),
-    body("sub").notEmpty().withMessage("Google ID required"),
-    body("name").notEmpty().withMessage("Name is required"),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  "/google",
+  [
+    // The frontend should only send the ID Token now, so we validate for it.
+    body("idToken").notEmpty().withMessage("Google ID Token is required"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    try {
-      const { email, name, picture, sub } = req.body;
-      const randomPassword = crypto.randomBytes(16).toString("hex");
+    try {
+      const { idToken } = req.body;
 
-      let user = await pool.query(
-        "SELECT id, username, email, name, picture FROM users WHERE google_id = $1 OR email = $2",
-        [sub, email]
-      );
+      // 1. Verify the ID Token with Google
+      const ticket = await client.verifyIdToken({
+        idToken: idToken,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+      
+      const payload = ticket.getPayload();
+      const { sub, email, name, picture } = payload; // Extract data from verified token
 
-      if (user.rows.length === 0) {
-        const newUser = await pool.query(
-          `INSERT INTO users (username, email, password, google_id, name, picture, auth_provider) 
-           VALUES ($1, $2, $3, $4, $5, $6, 'google') 
-           RETURNING id, username, email, name, picture`,
-          [email, email, randomPassword, sub, name, picture]
-        );
-        user = newUser;
-      }
+      // You need to have a `google_id` column in your `users` table
+      
+      let user = await pool.query(
+        "SELECT id, username, email, name, picture FROM users WHERE google_id = $1 OR email = $2",
+        [sub, email]
+      );
 
-      const accessToken = generateAccessToken(user.rows[0].id);
-      const refreshToken = await generateRefreshToken(user.rows[0].id);
+      if (user.rows.length === 0) {
+        // New user registration
+        const randomPassword = crypto.randomBytes(16).toString("hex");
+        const newUser = await pool.query(
+          `INSERT INTO users (username, email, password, google_id, name, picture, auth_provider) 
+           VALUES ($1, $2, $3, $4, $5, $6, 'google') 
+           RETURNING id, username, email, name, picture`,
+          [name || email.split('@')[0], email, randomPassword, sub, name, picture] // Use name or part of email for username
+        );
+        user = newUser;
+      }
 
-      res.json({
-        message: "Google login successful",
-        accessToken,
-        refreshToken,
-        user: user.rows[0],
-      });
-    } catch (error) {
-      console.error("Google login error:", error);
-      res.status(500).json({ message: "Server error" });
-    }
-  }
+      const accessToken = generateAccessToken(user.rows[0].id);
+      const refreshToken = await generateRefreshToken(user.rows[0].id);
+
+      res.json({
+        message: "Google login successful",
+        accessToken,
+        refreshToken,
+        user: user.rows[0],
+      });
+    } catch (error) {
+      console.error("Google ID Token validation or login error:", error);
+      // Send a 401 for token-related errors
+      if (error.message.includes('Token used too early') || error.message.includes('Invalid token')) {
+          return res.status(401).json({ message: "Invalid or expired Google ID token" });
+      }
+      res.status(500).json({ message: "Server error during Google login" });
+    }
+  }
 );
 
 // REFRESH
@@ -208,6 +272,21 @@ router.post("/logout", async (req, res) => {
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
+});
+
+// PROFILE
+router.get("/profile", authenticateToken, async (req, res) => {
+    // The authenticateToken middleware has already fetched the user data
+    // and attached it to req.user, excluding the password hash.
+    
+    // The query in auth.js: 'SELECT id, username, email, name, picture FROM users...'
+    
+    // If you need more fields, update the query in middleware/auth.js
+
+    res.json({
+        message: "Profile retrieved successfully",
+        user: req.user,
+    });
 });
 
 module.exports = router;
