@@ -123,112 +123,74 @@ router.post(
   }
 );
 
-// GOOGLE OAUTH
-// router.post(
-//   "/google",
-//   [
-//     body("email").isEmail().withMessage("Invalid email"),
-//     body("sub").notEmpty().withMessage("Google ID required"),
-//     body("name").notEmpty().withMessage("Name is required"),
-//   ],
-//   async (req, res) => {
-//     const errors = validationResult(req);
-//     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
-//     try {
-//       const { email, name, picture, sub } = req.body;
-//       const randomPassword = crypto.randomBytes(16).toString("hex");
-
-//       let user = await pool.query(
-//         "SELECT id, username, email, name, picture FROM users WHERE google_id = $1 OR email = $2",
-//         [sub, email]
-//       );
-
-//       if (user.rows.length === 0) {
-//         const newUser = await pool.query(
-//           `INSERT INTO users (username, email, password, google_id, name, picture, auth_provider) 
-//            VALUES ($1, $2, $3, $4, $5, $6, 'google') 
-//            RETURNING id, username, email, name, picture`,
-//           [email, email, randomPassword, sub, name, picture]
-//         );
-//         user = newUser;
-//       }
-
-//       const accessToken = generateAccessToken(user.rows[0].id);
-//       const refreshToken = await generateRefreshToken(user.rows[0].id);
-
-//       res.json({
-//         message: "Google login successful",
-//         accessToken,
-//         refreshToken,
-//         user: user.rows[0],
-//       });
-//     } catch (error) {
-//       console.error("Google login error:", error);
-//       res.status(500).json({ message: "Server error" });
-//     }
-//   }
-// );
 
 router.post(
-  "/google",
-  [
-    // The frontend should only send the ID Token now, so we validate for it.
-    body("idToken").notEmpty().withMessage("Google ID Token is required"),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  "/google",
+  [
+    body("idToken").notEmpty().withMessage("Google ID Token is required"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    try {
-      const { idToken } = req.body;
+    try {
+      const { idToken } = req.body;
 
-      // 1. Verify the ID Token with Google
-      const ticket = await client.verifyIdToken({
-        idToken: idToken,
-        audience: process.env.GOOGLE_CLIENT_ID,
-      });
-      
-      const payload = ticket.getPayload();
-      const { sub, email, name, picture } = payload; // Extract data from verified token
+      // 1. Verify the ID Token with Google's servers
+      const ticket = await client.verifyIdToken({
+        idToken: idToken,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+      
+      const payload = ticket.getPayload();
+      const { sub: googleId, email, name, picture } = payload;
 
-      // You need to have a `google_id` column in your `users` table
-      
-      let user = await pool.query(
-        "SELECT id, username, email, name, picture FROM users WHERE google_id = $1 OR email = $2",
-        [sub, email]
-      );
+      if (!email) {
+        return res.status(400).json({ message: "Email not provided by Google" });
+      }
 
-      if (user.rows.length === 0) {
-        // New user registration
-        const randomPassword = crypto.randomBytes(16).toString("hex");
-        const newUser = await pool.query(
-          `INSERT INTO users (username, email, password, google_id, name, picture, auth_provider) 
-           VALUES ($1, $2, $3, $4, $5, $6, 'google') 
-           RETURNING id, username, email, name, picture`,
-          [name || email.split('@')[0], email, randomPassword, sub, name, picture] // Use name or part of email for username
-        );
-        user = newUser;
-      }
+      // 2. Find or create user
+      let user = await pool.query(
+        "SELECT id, username, email, name, picture FROM users WHERE google_id = $1 OR email = $2",
+        [googleId, email]
+      );
 
-      const accessToken = generateAccessToken(user.rows[0].id);
-      const refreshToken = await generateRefreshToken(user.rows[0].id);
+      if (user.rows.length === 0) {
+        // Create new user
+        const randomPassword = crypto.randomBytes(16).toString("hex");
+        const username = name ? name.replace(/\s+/g, '').toLowerCase() : email.split('@')[0];
+        
+        const newUser = await pool.query(
+          `INSERT INTO users (username, email, password, google_id, name, picture, auth_provider) 
+           VALUES ($1, $2, $3, $4, $5, $6, 'google') 
+           RETURNING id, username, email, name, picture`,
+          [username, email, randomPassword, googleId, name, picture]
+        );
+        user = newUser;
+      }
 
-      res.json({
-        message: "Google login successful",
-        accessToken,
-        refreshToken,
-        user: user.rows[0],
-      });
-    } catch (error) {
-      console.error("Google ID Token validation or login error:", error);
-      // Send a 401 for token-related errors
-      if (error.message.includes('Token used too early') || error.message.includes('Invalid token')) {
-          return res.status(401).json({ message: "Invalid or expired Google ID token" });
-      }
-      res.status(500).json({ message: "Server error during Google login" });
-    }
-  }
+      // 3. Generate your app's tokens
+      const accessToken = generateAccessToken(user.rows[0].id);
+      const refreshToken = await generateRefreshToken(user.rows[0].id);
+
+      res.json({
+        message: "Google login successful",
+        accessToken,
+        refreshToken,
+        user: user.rows[0],
+      });
+    } catch (error) {
+      console.error("Google OAuth error:", error);
+      
+      if (error.message.includes('Token used too early') || 
+          error.message.includes('Invalid token') ||
+          error.message.includes('Malformed token')) {
+        return res.status(401).json({ message: "Invalid Google token" });
+      }
+      
+      res.status(500).json({ message: "Authentication server error" });
+    }
+  }
 );
 
 // REFRESH
